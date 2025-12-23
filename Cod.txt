@@ -1,192 +1,206 @@
 # code.txt
 def start(token, config, log):
     log("[CORE] Startuje logika")
+# ================== IMPORTY ==================
+import discord
+from discord.ext import commands
+from discord import app_commands
+from discord.ui import View, Button, Select
+import yt_dlp
+import asyncio
+import datetime, os
+import random, string
 
-    import discord
-    from discord.ext import commands
-    from discord import app_commands
-    import asyncio
-    import random
-    import datetime
+from captcha.image import ImageCaptcha
 
-    intents = discord.Intents.default()
-    intents.message_content = True
-    intents.members = True
-    intents.guilds = True
-    intents.messages = True
-    intents.reactions = True
+# ================== KONFIG ==================
+GUILD_ID = 1431029718324609045
+VERIFIED_ROLE_ID = 1431039301570924605
+TICKET_CATEGORY_ID = 1452973433167024232
+STAFF_ROLE_ID = 1452094387201769502
 
-    bot = commands.Bot(command_prefix=config["prefix"], intents=intents)
-    tree = bot.tree
+LOG_PATH = "/home/iseeyou/Pulpit/Logi/logi.md"
+CAPTCHA_DIR = "/tmp/captcha"
 
-    VERIFIED_ROLE_ID = config.get("verified_role_id")
-    TICKET_CATEGORY_ID = config.get("ticket_category_id")
+OSTATNIA_LITERA_ID = 1234567890
+OSOBA_PONIZEJ_ID = 1234567890
+LICZENIA_ID = 1234567890
 
-    # Dynamiczne kanały
-    log_channel = None
-    welcome_channel = None
+# ================== INTENTY ==================
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-    # =============================
-    # READY
-    # =============================
-    @bot.event
-    async def on_ready():
-        await tree.sync()
-        log(f"[CORE] Zalogowano jako {bot.user}")
+# ================== LOGI ==================
+def log_to_file(text: str):
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(f"- `{ts}` {text}\n")
 
-    # =============================
-    # POWITANIA
-    # =============================
-    @bot.event
-    async def on_member_join(member):
-        nonlocal welcome_channel
-        if welcome_channel:
-            member_number = len(member.guild.members)
-            await welcome_channel.send(
-                f"Witaj {member.name}! Trafiłeś na {member.guild.name}. Jesteś osobą {member_number} na serwerze!"
-            )
+# ================== CAPTCHA ==================
+image = ImageCaptcha(width=280, height=90)
+CAPTCHA = {}  # user_id -> poprawny tekst
+os.makedirs(CAPTCHA_DIR, exist_ok=True)
 
-    # =============================
-    # LOGI AKTYWNOŚCI
-    # =============================
-    @bot.event
-    async def on_message_edit(before, after):
-        nonlocal log_channel
-        if log_channel:
-            await log_channel.send(
-                f"✏️ Wiadomość edytowana przez {before.author.mention} w {before.channel.mention}.\n"
-                f"Stara: {before.content}\nNowa: {after.content}"
-            )
+def generate_captcha():
+    text = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    path = f"{CAPTCHA_DIR}/{text}.png"
+    image.write(text, path)
+    return text, path
 
-    @bot.event
-    async def on_message_delete(message):
-        nonlocal log_channel
-        if log_channel:
-            await log_channel.send(
-                f"🗑️ Wiadomość usunięta przez {message.author.mention} w {message.channel.mention}.\n"
-                f"Treść: {message.content}"
-            )
+# ================== STAN ==================
+last_word = None
+last_number = 0
+last_user_game = {"litera": None, "liczenia": None}
 
-    # =============================
-    # SLASH COMMANDY DYNAMICZNE
-    # =============================
-    @tree.command(name="pokazujlogi", description="Ustaw kanał dla logów od teraz")
-    async def pokazujlogi(interaction: discord.Interaction):
-        nonlocal log_channel
-        log_channel = interaction.channel
-        await interaction.response.send_message(
-            f"✅ Kanał {interaction.channel.mention} ustawiony jako kanał logów.", ephemeral=True
-        )
+# MAX system
+DYNAMIC_CHANNELS = {}
+TEMP_VC = {}
+VC_OWNER = {}
+USER_MAX_COUNT = {}
+MAX_PER_USER = 3
 
-    @tree.command(name="powitania", description="Ustaw kanał dla powitań od teraz")
-    async def powitania(interaction: discord.Interaction):
-        nonlocal welcome_channel
-        welcome_channel = interaction.channel
-        await interaction.response.send_message(
-            f"✅ Kanał {interaction.channel.mention} ustawiony jako kanał powitań.", ephemeral=True
-        )
+# ================== STATYSTYKI ==================
+STATS = {
+    "max_created": 0,
+    "vc_created": 0,
+    "vc_deleted": 0
+}
 
-    # =============================
-    # WERYFIKACJA
-    # =============================
-    class VerifyView(discord.ui.View):
-        @discord.ui.button(label="✅ Zweryfikuj się", style=discord.ButtonStyle.green)
-        async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-            role = interaction.guild.get_role(VERIFIED_ROLE_ID)
-            if role:
-                await interaction.user.add_roles(role)
-                await interaction.response.send_message("✅ Zweryfikowano!", ephemeral=True)
+# ================== READY ==================
+@bot.event
+async def on_ready():
+    TEMP_VC.clear()
+    VC_OWNER.clear()
+    USER_MAX_COUNT.clear()
 
-    @tree.command(name="menuweryfikacja", description="Panel weryfikacji")
-    async def menuweryfikacja(interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🔐 Weryfikacja",
-            description="Kliknij przycisk aby się zweryfikować",
-            color=0x2ecc71
-        )
-        await interaction.response.send_message(embed=embed, view=VerifyView())
+    bot.add_view(VerifyView())
+    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-    # =============================
-    # TICKETY
-    # =============================
-    class TicketSelect(discord.ui.Select):
-        def __init__(self):
-            options = [
-                discord.SelectOption(label="Pomoc", emoji="🛠️"),
-                discord.SelectOption(label="Współpraca", emoji="🤝"),
-                discord.SelectOption(label="Inne", emoji="📩")
-            ]
-            super().__init__(placeholder="Wybierz typ ticketa", options=options)
+    log_to_file("Bot uruchomiony")
+    print(f"✅ Zalogowano jako {bot.user}")
 
-        async def callback(self, interaction: discord.Interaction):
-            category = interaction.guild.get_channel(TICKET_CATEGORY_ID)
-            channel = await interaction.guild.create_text_channel(
-                f"ticket-{interaction.user.name}",
-                category=category
-            )
-            await channel.send(f"{interaction.user.mention} 🎫 Ticket utworzony")
-            await interaction.response.send_message("✅ Ticket utworzony!", ephemeral=True)
-            # Log do kanału logów
-            nonlocal log_channel
-            if log_channel:
-                await log_channel.send(f"🎫 {interaction.user.mention} utworzył ticket {channel.name} o {datetime.datetime.now()}")
+# ================== VIEWS ==================
+class VerifyView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    class TicketView(discord.ui.View):
-        def __init__(self):
-            super().__init__()
-            self.add_item(TicketSelect())
-
-    @tree.command(name="menuticket", description="Panel ticketów")
-    async def menuticket(interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🎫 Tickety",
-            description="Wybierz powód kontaktu",
-            color=0x3498db
-        )
-        await interaction.response.send_message(embed=embed, view=TicketView())
-
-    # =============================
-    # OGŁOSZENIA
-    # =============================
-    @tree.command(name="ogłoszenie", description="Wyślij ogłoszenie")
-    @app_commands.describe(tytuł="Tytuł", treść="Treść ogłoszenia")
-    async def ogloszenie(interaction: discord.Interaction, tytuł: str, treść: str):
-        embed = discord.Embed(title=tytuł, description=treść, color=0xf1c40f)
-        embed.set_footer(text="📢 Ogłoszenie")
-        await interaction.response.send_message(embed=embed)
-
-    # =============================
-    # KONKURSY
-    # =============================
-    @tree.command(name="konkurs", description="Utwórz konkurs")
-    @app_commands.describe(
-        nagroda="Co do wygrania",
-        czas="Czas w sekundach",
-        wygrani="Ilu wygranych"
+    @discord.ui.button(
+        label="✅ Zweryfikuj się",
+        style=discord.ButtonStyle.green,
+        custom_id="verify_captcha_image"
     )
-    async def konkurs(
-        interaction: discord.Interaction,
-        nagroda: str,
-        czas: int,
-        wygrani: int
-    ):
-        embed = discord.Embed(
-            title="🎉 KONKURS!",
-            description=f"🏆 Nagroda: **{nagroda}**\n⏱️ Czas: **{czas}s**\n👥 Wygrani: **{wygrani}**",
-            color=0xe84393
-        )
-        msg = await interaction.response.send_message(embed=embed)
-        message = await interaction.original_response()
-        await message.add_reaction("🎉")
-        await asyncio.sleep(czas)
-        message = await message.channel.fetch_message(message.id)
-        users = [u async for u in message.reactions[0].users() if not u.bot]
-        if not users:
-            await message.channel.send("❌ Brak uczestników")
+    async def verify(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.get_role(VERIFIED_ROLE_ID):
+            await interaction.response.send_message(
+                "⚠️ Już jesteś zweryfikowany.",
+                ephemeral=True
+            )
             return
-        winners = random.sample(users, min(wygrani, len(users)))
-        await message.channel.send(
-            "🎊 Wygrali: " + ", ".join(w.mention for w in winners)
+
+        text, path = generate_captcha()
+        CAPTCHA[interaction.user.id] = text
+
+        file = discord.File(path, filename="captcha.png")
+        await interaction.response.send_message(
+            "🔐 **Przepisz tekst z obrazka i wyślij go jako wiadomość**",
+            file=file,
+            ephemeral=True
         )
 
+        log_to_file(f"Wysłano CAPTCHA do {interaction.user} ({text})")
+
+class TicketActionView(View):
+    def __init__(self, channel):
+        super().__init__()
+        self.channel = channel
+
+    @discord.ui.button(label="🗑️ Zamknij", style=discord.ButtonStyle.red)
+    async def close(self, interaction: discord.Interaction, button: Button):
+        await self.channel.delete()
+        log_to_file(f"Ticket zamknięty przez {interaction.user}")
+
+class TicketSelect(Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Wybierz typ ticketu",
+            options=[
+                discord.SelectOption(label="Support"),
+                discord.SelectOption(label="Skarga"),
+                discord.SelectOption(label="Propozycja")
+            ]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True),
+            guild.get_role(STAFF_ROLE_ID): discord.PermissionOverwrite(view_channel=True)
+        }
+        ch = await guild.create_text_channel(
+            f"ticket-{interaction.user.name}".lower(),
+            category=category,
+            overwrites=overwrites
+        )
+        await ch.send(view=TicketActionView(ch))
+        await interaction.response.send_message(f"🎫 Utworzono {ch.mention}", ephemeral=True)
+        log_to_file(f"Ticket utworzony przez {interaction.user}")
+
+class TicketView(View):
+    def __init__(self):
+        super().__init__()
+        self.add_item(TicketSelect())
+
+class MenuView(View):
+    @discord.ui.button(label="🎫 Tickety", style=discord.ButtonStyle.green)
+    async def t(self, i, b):
+        await i.response.send_message("Użyj /ticket", ephemeral=True)
+
+# ================== CAPTCHA ODPOWIEDŹ ==================
+@bot.event
+async def on_message(msg: discord.Message):
+    if msg.author.bot or not msg.guild:
+        return
+
+    if msg.author.id in CAPTCHA:
+        correct = CAPTCHA[msg.author.id]
+
+        if msg.content.strip().upper() == correct:
+            role = msg.guild.get_role(VERIFIED_ROLE_ID)
+            if role:
+                await msg.author.add_roles(role)
+
+            await msg.reply("✅ Zweryfikowano!", delete_after=5)
+            log_to_file(f"{msg.author} poprawnie przeszedł CAPTCHA")
+        else:
+            await msg.reply("❌ Zła CAPTCHA. Spróbuj ponownie.", delete_after=5)
+            log_to_file(f"{msg.author} podał złą CAPTCHA ({msg.content})")
+
+        CAPTCHA.pop(msg.author.id, None)
+
+        try:
+            await msg.delete()
+        except:
+            pass
+
+    await bot.process_commands(msg)
+
+# ================== SLASH ==================
+@bot.tree.command(name="weryfikacja", description="Wyślij panel weryfikacji", guild=discord.Object(id=GUILD_ID))
+async def weryfikacja(i: discord.Interaction):
+    await i.channel.send(
+        "🔐 **Weryfikacja serwera**\nKliknij przycisk i przepisz CAPTCHA:",
+        view=VerifyView()
+    )
+    await i.response.send_message("✅ Panel wysłany", ephemeral=True)
+    log_to_file(f"Panel weryfikacji wysłany przez {i.user}")
+
+@bot.tree.command(name="ping", description="Ping", guild=discord.Object(id=GUILD_ID))
+async def ping(i: discord.Interaction):
+    await i.response.send_message(f"🏓 Pong! {round(bot.latency*1000)} ms", ephemeral=True)
+
+# ================== START ==================
+def start_bot(token):
     bot.run(token)
