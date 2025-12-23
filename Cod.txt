@@ -1,0 +1,192 @@
+# code.txt
+def start(token, config, log):
+    log("[CORE] Startuje logika")
+
+    import discord
+    from discord.ext import commands
+    from discord import app_commands
+    import asyncio
+    import random
+    import datetime
+
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.members = True
+    intents.guilds = True
+    intents.messages = True
+    intents.reactions = True
+
+    bot = commands.Bot(command_prefix=config["prefix"], intents=intents)
+    tree = bot.tree
+
+    VERIFIED_ROLE_ID = config.get("verified_role_id")
+    TICKET_CATEGORY_ID = config.get("ticket_category_id")
+
+    # Dynamiczne kanały
+    log_channel = None
+    welcome_channel = None
+
+    # =============================
+    # READY
+    # =============================
+    @bot.event
+    async def on_ready():
+        await tree.sync()
+        log(f"[CORE] Zalogowano jako {bot.user}")
+
+    # =============================
+    # POWITANIA
+    # =============================
+    @bot.event
+    async def on_member_join(member):
+        nonlocal welcome_channel
+        if welcome_channel:
+            member_number = len(member.guild.members)
+            await welcome_channel.send(
+                f"Witaj {member.name}! Trafiłeś na {member.guild.name}. Jesteś osobą {member_number} na serwerze!"
+            )
+
+    # =============================
+    # LOGI AKTYWNOŚCI
+    # =============================
+    @bot.event
+    async def on_message_edit(before, after):
+        nonlocal log_channel
+        if log_channel:
+            await log_channel.send(
+                f"✏️ Wiadomość edytowana przez {before.author.mention} w {before.channel.mention}.\n"
+                f"Stara: {before.content}\nNowa: {after.content}"
+            )
+
+    @bot.event
+    async def on_message_delete(message):
+        nonlocal log_channel
+        if log_channel:
+            await log_channel.send(
+                f"🗑️ Wiadomość usunięta przez {message.author.mention} w {message.channel.mention}.\n"
+                f"Treść: {message.content}"
+            )
+
+    # =============================
+    # SLASH COMMANDY DYNAMICZNE
+    # =============================
+    @tree.command(name="pokazujlogi", description="Ustaw kanał dla logów od teraz")
+    async def pokazujlogi(interaction: discord.Interaction):
+        nonlocal log_channel
+        log_channel = interaction.channel
+        await interaction.response.send_message(
+            f"✅ Kanał {interaction.channel.mention} ustawiony jako kanał logów.", ephemeral=True
+        )
+
+    @tree.command(name="powitania", description="Ustaw kanał dla powitań od teraz")
+    async def powitania(interaction: discord.Interaction):
+        nonlocal welcome_channel
+        welcome_channel = interaction.channel
+        await interaction.response.send_message(
+            f"✅ Kanał {interaction.channel.mention} ustawiony jako kanał powitań.", ephemeral=True
+        )
+
+    # =============================
+    # WERYFIKACJA
+    # =============================
+    class VerifyView(discord.ui.View):
+        @discord.ui.button(label="✅ Zweryfikuj się", style=discord.ButtonStyle.green)
+        async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+            role = interaction.guild.get_role(VERIFIED_ROLE_ID)
+            if role:
+                await interaction.user.add_roles(role)
+                await interaction.response.send_message("✅ Zweryfikowano!", ephemeral=True)
+
+    @tree.command(name="menuweryfikacja", description="Panel weryfikacji")
+    async def menuweryfikacja(interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🔐 Weryfikacja",
+            description="Kliknij przycisk aby się zweryfikować",
+            color=0x2ecc71
+        )
+        await interaction.response.send_message(embed=embed, view=VerifyView())
+
+    # =============================
+    # TICKETY
+    # =============================
+    class TicketSelect(discord.ui.Select):
+        def __init__(self):
+            options = [
+                discord.SelectOption(label="Pomoc", emoji="🛠️"),
+                discord.SelectOption(label="Współpraca", emoji="🤝"),
+                discord.SelectOption(label="Inne", emoji="📩")
+            ]
+            super().__init__(placeholder="Wybierz typ ticketa", options=options)
+
+        async def callback(self, interaction: discord.Interaction):
+            category = interaction.guild.get_channel(TICKET_CATEGORY_ID)
+            channel = await interaction.guild.create_text_channel(
+                f"ticket-{interaction.user.name}",
+                category=category
+            )
+            await channel.send(f"{interaction.user.mention} 🎫 Ticket utworzony")
+            await interaction.response.send_message("✅ Ticket utworzony!", ephemeral=True)
+            # Log do kanału logów
+            nonlocal log_channel
+            if log_channel:
+                await log_channel.send(f"🎫 {interaction.user.mention} utworzył ticket {channel.name} o {datetime.datetime.now()}")
+
+    class TicketView(discord.ui.View):
+        def __init__(self):
+            super().__init__()
+            self.add_item(TicketSelect())
+
+    @tree.command(name="menuticket", description="Panel ticketów")
+    async def menuticket(interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎫 Tickety",
+            description="Wybierz powód kontaktu",
+            color=0x3498db
+        )
+        await interaction.response.send_message(embed=embed, view=TicketView())
+
+    # =============================
+    # OGŁOSZENIA
+    # =============================
+    @tree.command(name="ogłoszenie", description="Wyślij ogłoszenie")
+    @app_commands.describe(tytuł="Tytuł", treść="Treść ogłoszenia")
+    async def ogloszenie(interaction: discord.Interaction, tytuł: str, treść: str):
+        embed = discord.Embed(title=tytuł, description=treść, color=0xf1c40f)
+        embed.set_footer(text="📢 Ogłoszenie")
+        await interaction.response.send_message(embed=embed)
+
+    # =============================
+    # KONKURSY
+    # =============================
+    @tree.command(name="konkurs", description="Utwórz konkurs")
+    @app_commands.describe(
+        nagroda="Co do wygrania",
+        czas="Czas w sekundach",
+        wygrani="Ilu wygranych"
+    )
+    async def konkurs(
+        interaction: discord.Interaction,
+        nagroda: str,
+        czas: int,
+        wygrani: int
+    ):
+        embed = discord.Embed(
+            title="🎉 KONKURS!",
+            description=f"🏆 Nagroda: **{nagroda}**\n⏱️ Czas: **{czas}s**\n👥 Wygrani: **{wygrani}**",
+            color=0xe84393
+        )
+        msg = await interaction.response.send_message(embed=embed)
+        message = await interaction.original_response()
+        await message.add_reaction("🎉")
+        await asyncio.sleep(czas)
+        message = await message.channel.fetch_message(message.id)
+        users = [u async for u in message.reactions[0].users() if not u.bot]
+        if not users:
+            await message.channel.send("❌ Brak uczestników")
+            return
+        winners = random.sample(users, min(wygrani, len(users)))
+        await message.channel.send(
+            "🎊 Wygrali: " + ", ".join(w.mention for w in winners)
+        )
+
+    bot.run(token)
